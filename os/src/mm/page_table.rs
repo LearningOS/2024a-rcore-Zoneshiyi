@@ -1,6 +1,8 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 
-use super::{frame_alloc, FrameTracker, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+use super::{
+    frame_alloc, FrameTracker, MapPermission, PhysPageNum, StepByOne, VirtAddr, VirtPageNum
+};
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
@@ -147,6 +149,70 @@ impl PageTable {
     pub fn token(&self) -> usize {
         8usize << 60 | self.root_ppn.0
     }
+
+    /// mmap
+    /// token: the token of page table
+    /// start: the start address of the memory to be mapped, must be page aligned
+    /// len: the length of the memory to be mapped
+    pub fn mmap(&mut self, start: usize, len: usize, perm: MapPermission) -> isize {
+        let mut start_va = VirtAddr::from(start);
+        if !start_va.aligned() {
+            error!("start address is not aligned");
+            return -1;
+        }
+        let end_va: VirtAddr = VirtAddr::from(start + len).ceil().into();
+
+        // trace!("mmap start_va: {:?}, end_va: {:?}, perm: {:?}", start_va, end_va, perm);
+
+        while start_va < end_va {
+            let mut vpn = start_va.floor();
+            if let Some(pte) = self.translate(vpn) {
+                if pte.is_valid() {
+                    error!("address {:?} is mapped before mapping", vpn);
+                    return -1;
+                }
+            }
+            if let Some(frame) = frame_alloc() {
+                let pteflags = PTEFlags::from_bits(perm.bits()).unwrap();
+                self.map(vpn, frame.ppn, pteflags);
+                // trace!("mmap {:?} -> {:?}, pteflags: {:?}", vpn, frame.ppn, pteflags);
+                vpn.step();
+                start_va = vpn.into();
+            } else {
+                error!("frame allocation failed");
+                return -1;
+            }
+        }
+        0
+    }
+
+    /// munmap
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        let mut start_va = VirtAddr::from(start);
+        if !start_va.aligned() {
+            error!("start address is not aligned");
+            return -1;
+        }
+        let end_va: VirtAddr = VirtAddr::from(start + len).ceil().into();
+
+        while start_va < end_va {
+            let mut vpn = start_va.floor();
+            if let Some(pte) = self.translate(vpn) {
+                if pte.is_valid() {
+                    self.unmap(vpn);
+                } else {
+                    error!("address {:?} is invalid before unmapping", vpn);
+                    return -1;
+                }
+                vpn.step();
+                start_va = vpn.into();
+            } else {
+                error!("address {:?} is not mapped before unmapping", vpn);
+                return -1;
+            }
+        }
+        0
+    }
 }
 
 /// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table
@@ -170,4 +236,21 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         start = end_va.into();
     }
     v
+}
+
+/// Copy data to user space
+/// token: the token of page table
+/// dst: the destination address in user space
+/// src: the source address in kernel space
+/// len: the length of data
+pub fn copy_to_user(token: usize, dst: *mut u8, src: *const u8, len: usize) {
+    let src_bytes: &[u8] = unsafe { core::slice::from_raw_parts(src, len) };
+    let buffers = translated_byte_buffer(token, dst as *const u8, len);
+
+    let mut offset = 0;
+    for buffer in buffers {
+        let b_len = buffer.len();
+        buffer.copy_from_slice(&src_bytes[offset..offset + b_len]);
+        offset += b_len;
+    }
 }

@@ -9,6 +9,9 @@
 //! Be careful when you see `__switch` ASM function in `switch.S`. Control flow around this function
 //! might not be what you expect.
 
+use crate::config:: MAX_SYSCALL_NUM;
+use crate::timer::get_time_ms;
+use crate::mm::MapPermission;
 mod context;
 mod switch;
 #[allow(clippy::module_inception)]
@@ -79,6 +82,7 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
+        next_task.start_time_ms = get_time_ms();
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -141,6 +145,10 @@ impl TaskManager {
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
             inner.current_task = next;
+            let task_next = &mut inner.tasks[next];
+            if task_next.start_time_ms == 0 {
+                task_next.start_time_ms = get_time_ms();
+            }
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
             drop(inner);
@@ -152,6 +160,53 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+    /// Add the number of syscall times of the current task.
+    fn add_syscall_times(&self, syscall_id: usize) {
+        let mut inner = TASK_MANAGER.inner.exclusive_access();
+        let current_task = inner.current_task;
+        inner.tasks[current_task].syscall_times[syscall_id] += 1;
+    }
+
+    /// Get the number of syscall times of the current task.
+    fn get_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        inner.tasks[current_task].syscall_times
+    }
+
+    /// Get the current task's status
+    fn get_current_state(&self) -> TaskStatus {
+        let inner = self.inner.exclusive_access();
+        inner.tasks[inner.current_task].task_status
+    }
+
+    /// Get the current task's start time
+    fn get_start_time_ms(&self) -> usize {
+        let inner = self.inner.exclusive_access();
+        inner.tasks[inner.current_task].start_time_ms
+    }
+
+    fn mmap(&self, start: usize, len: usize, port: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        if port & !0x7 != 0 || port & 0x7 == 0 {
+            error!("invalid port");
+            return -1;
+        }
+        let perm = MapPermission::from_bits_truncate((port<<1) as u8) | MapPermission::U;
+        // trace!("port: {:x}, perm: {:?}", port, perm);
+
+        inner.tasks[current_task].memory_set.page_table
+        .mmap(start, len, perm)
+    }
+
+    fn munmap(&self, start: usize, len: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+
+        inner.tasks[current_task].memory_set.page_table
+        .munmap(start, len)
     }
 }
 
@@ -201,4 +256,34 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Add the number of syscall times of the current task.
+pub fn add_syscall_times(syscall_id: usize) {
+    TASK_MANAGER.add_syscall_times(syscall_id);
+}
+
+/// Get the number of syscall times of the current task.
+pub fn get_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
+    TASK_MANAGER.get_syscall_times()
+}
+
+/// Get the current task's status.
+pub fn get_current_state() -> TaskStatus {
+    TASK_MANAGER.get_current_state()
+}
+
+/// Get the current task's start time
+pub fn get_start_time_ms() -> usize {
+    TASK_MANAGER.get_start_time_ms()
+}
+
+/// Map a memory area in the current task's page table.
+pub fn current_page_table_mmap(start: usize, len: usize, port: usize) -> isize {
+    TASK_MANAGER.mmap(start, len, port)
+}
+
+/// Unmap a memory area in the current task's page table.
+pub fn current_page_table_munmap(start: usize, len: usize) -> isize {
+    TASK_MANAGER.munmap(start, len)
 }
