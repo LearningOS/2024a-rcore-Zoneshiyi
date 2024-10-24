@@ -1,9 +1,10 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{BIG_STRIDE, INIT_PRIORITY, MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -33,6 +34,44 @@ impl TaskControlBlock {
     pub fn get_user_token(&self) -> usize {
         let inner = self.inner_exclusive_access();
         inner.memory_set.token()
+    }
+
+    /// Add the number of syscalls
+    pub fn add_syscall_times(&self, syscall_id: usize) {
+        let mut inner = self.inner_exclusive_access();
+        inner.syscall_times[syscall_id] += 1;
+    }
+
+    // pub fn set_start_time_ms(&self) {
+    //     let mut inner = self.inner_exclusive_access();
+    //     if inner.start_time_ms == 0 {
+    //         inner.start_time_ms = get_time_ms();
+    //     }
+    // }
+
+    /// Get the pass value of the task
+    pub fn get_pass(&self) -> usize {
+        let inner = self.inner_exclusive_access();
+        inner.pass
+    }
+    
+    ///Get the stride of the task
+    pub fn get_stride(&self) -> usize {
+        let inner = self.inner_exclusive_access();
+        inner.stride
+    }
+
+    ///Add the stride of the task
+    pub fn add_stride(&self) {
+        let mut inner = self.inner_exclusive_access();
+        inner.stride += inner.pass;
+    }
+
+    /// Set the priority of the task
+    pub fn set_priority(&self, priority: isize) {
+        let mut inner = self.inner_exclusive_access();
+        inner.pass = BIG_STRIDE / priority as usize;
+        info!("task pass: {},task pid: {}", inner.pass, self.pid.0);
     }
 }
 
@@ -68,6 +107,15 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// The numbers of syscall called by task
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
+    /// Start time of task
+    pub start_time_ms: usize,
+    /// Stride scheduling
+    pub stride: usize,
+    /// pass value of stride scheduling
+    pub pass: usize,
 }
 
 impl TaskControlBlockInner {
@@ -118,6 +166,10 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    start_time_ms: get_time_ms(),
+                    stride: 0,
+                    pass: BIG_STRIDE/INIT_PRIORITY,
                 })
             },
         };
@@ -191,6 +243,10 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    start_time_ms: get_time_ms(),
+                    stride: parent_inner.stride,
+                    pass: parent_inner.pass,
                 })
             },
         });
@@ -204,6 +260,18 @@ impl TaskControlBlock {
         task_control_block
         // **** release child PCB
         // ---- release parent PCB
+    }
+
+    /// spawn a new process
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        let mut parent_inner = self.inner_exclusive_access();
+
+        let task_control_block = Arc::new(TaskControlBlock::new(elf_data));
+
+        task_control_block.inner_exclusive_access().parent = Some(Arc::downgrade(self));
+        parent_inner.children.push(task_control_block.clone());
+
+        task_control_block
     }
 
     /// get pid of process

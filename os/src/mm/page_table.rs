@@ -8,13 +8,21 @@ use bitflags::*;
 bitflags! {
     /// page table entry flags
     pub struct PTEFlags: u8 {
+        /// Valid flag
         const V = 1 << 0;
+        /// Readable flag
         const R = 1 << 1;
+        /// Writable flag
         const W = 1 << 2;
+        /// Executable flag
         const X = 1 << 3;
+        /// User flag
         const U = 1 << 4;
+        /// Global flag
         const G = 1 << 5;
+        /// Accessed flag
         const A = 1 << 6;
+        /// Dirty flag
         const D = 1 << 7;
     }
 }
@@ -158,6 +166,60 @@ impl PageTable {
     pub fn token(&self) -> usize {
         8usize << 60 | self.root_ppn.0
     }
+
+    /// mmap
+    /// token: the token of page table
+    /// start: the start address of the memory to be mapped, must be page aligned
+    /// len: the length of the memory to be mapped
+    pub fn mmap(&mut self, start: usize, len: usize, flags: PTEFlags) -> isize {
+        let mut start_va = VirtAddr::from(start);
+
+        let end_va: VirtAddr = VirtAddr::from(start + len).ceil().into();
+
+        while start_va < end_va {
+            let mut vpn = start_va.floor();
+            if let Some(pte) = self.translate(vpn) {
+                if pte.is_valid() {
+                    error!("address {:?} is mapped before mapping", vpn);
+                    return -1;
+                }
+            }
+            if let Some(frame) = frame_alloc() {
+                self.map(vpn, frame.ppn, flags);
+                // trace!("mmap {:?} -> {:?}, pteflags: {:?}", vpn, frame.ppn, flags);
+                vpn.step();
+                start_va = vpn.into();
+            } else {
+                error!("frame allocation failed");
+                return -1;
+            }
+        }
+        0
+    }
+
+    /// munmap
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        let mut start_va = VirtAddr::from(start);
+        let end_va: VirtAddr = VirtAddr::from(start + len).ceil().into();
+
+        while start_va < end_va {
+            let mut vpn = start_va.floor();
+            if let Some(pte) = self.translate(vpn) {
+                if pte.is_valid() {
+                    self.unmap(vpn);
+                } else {
+                    error!("address {:?} is invalid before unmapping", vpn);
+                    return -1;
+                }
+                vpn.step();
+                start_va = vpn.into();
+            } else {
+                error!("address {:?} is not mapped before unmapping", vpn);
+                return -1;
+            }
+        }
+        0
+    }
 }
 
 /// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table
@@ -212,4 +274,27 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
         .translate_va(VirtAddr::from(va))
         .unwrap()
         .get_mut()
+}
+
+/// Is the vpn already mapped?
+pub fn is_vpn_mapped(token: usize, vpn: VirtPageNum) -> bool {
+    if let Some(pte) = PageTable::from_token(token).translate(vpn) {
+        pte.is_valid()
+    } else {
+        false
+    }
+}
+
+/// Is the va space already mapped?
+pub fn is_va_space_mapped(token: usize, va_start: usize, len: usize) -> bool {
+    let mut vpn = VirtAddr::from(va_start).floor();
+    let vpn_end = VirtAddr::from(va_start + len).ceil();
+    // info!("vpn = {:?}, vpn_end = {:?}", vpn, vpn_end);
+    while vpn < vpn_end {
+        if is_vpn_mapped(token, vpn) {
+            return true;
+        }
+        vpn.step();
+    }
+    false
 }
