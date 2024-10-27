@@ -6,8 +6,10 @@
 //! need to wrap `OSInodeInner` into `UPSafeCell`
 use super::File;
 use crate::drivers::BLOCK_DEVICE;
+use crate::fs::{Stat, StatMode};
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
+use crate::task::current_task;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::*;
@@ -124,6 +126,47 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
     }
 }
 
+/// Link a file
+pub fn linkat(old_name: &str, new_name: &str) -> isize {
+    if ROOT_INODE.find(new_name).is_some() {
+        error!("file {} already exists", new_name);
+        return -1;
+    }
+    if ROOT_INODE.find(old_name).is_none() {
+        error!("file {} not found", old_name);
+        return -1;
+    }
+    trace!("linkat: old_name = {}, new_name = {}", old_name, new_name);
+    ROOT_INODE.linkat(old_name, new_name);
+    0
+}
+
+/// Unlink a file
+pub fn unlinkat(name: &str) -> isize {
+    if let Some(_) = ROOT_INODE.find(name) {
+        ROOT_INODE.unlinkat(name);
+        0
+    } else {
+        error!("file {} not found", name);
+        -1
+    }
+}
+
+/// file status
+pub fn fstat(fd: usize) -> Option<Stat> {
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+    if fd >= inner.fd_table.len() {
+        return None;
+    }
+    if inner.fd_table[fd].is_none() {
+        return None;
+    }
+    let os_inode = inner.fd_table[fd].as_ref().unwrap();
+    // trace!("fs::inode::fstat: fd = {:?}", fd);
+    Some(os_inode.fstat())
+}
+
 impl File for OSInode {
     fn readable(&self) -> bool {
         self.readable
@@ -154,5 +197,26 @@ impl File for OSInode {
             total_write_size += write_size;
         }
         total_write_size
+    }
+    fn fstat(&self) -> Stat {
+        let inner = self.inner.exclusive_access();
+        let inode_id = inner.inode.get_disk_inode_id();
+        // trace!("fs::inode::fstat: inode_id = {:?}", inode_id);
+        let mode = if inner.inode.is_dir() {
+            StatMode::DIR
+        } else {
+            StatMode::FILE
+        };
+        // trace!("fs::inode::fstat: mode = {:?}", mode);
+        let nlink = inner.inode.get_hard_link_count();
+        // trace!("fs::inode::fstat: nlink = {:?}", nlink);
+        drop(inner);
+        Stat {
+            dev: 0,
+            ino: inode_id as u64,
+            mode,
+            nlink,
+            pad: [0; 7],
+        }
     }
 }

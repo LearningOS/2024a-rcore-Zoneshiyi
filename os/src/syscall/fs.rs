@@ -1,7 +1,7 @@
 //! File and filesystem-related syscalls
-use crate::fs::{open_file, OpenFlags, Stat};
+use crate::fs::{open_file, OpenFlags, Stat, linkat, unlinkat, fstat};
 use crate::mm::{translated_byte_buffer, translated_str, UserBuffer};
-use crate::task::{current_task, current_user_token};
+use crate::task::{copy_to_current_user, current_task, current_user_token};
 
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
     trace!("kernel:pid[{}] sys_write", current_task().unwrap().pid.0);
@@ -78,26 +78,40 @@ pub fn sys_close(fd: usize) -> isize {
 /// YOUR JOB: Implement fstat.
 pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
     trace!(
-        "kernel:pid[{}] sys_fstat NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_fstat",
         current_task().unwrap().pid.0
     );
-    -1
+    if let Some(stat) = fstat(_fd) {
+        copy_to_current_user(
+            _st as *mut u8,
+            &stat as *const Stat as *const u8,
+            core::mem::size_of::<Stat>(),
+        );
+        0
+    } else {
+        -1
+    }
 }
 
 /// YOUR JOB: Implement linkat.
 pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
     trace!(
-        "kernel:pid[{}] sys_linkat NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_linkat",
         current_task().unwrap().pid.0
     );
-    -1
+    let token = current_user_token();
+    let old_path = translated_str(token, _old_name);
+    let new_path = translated_str(token, _new_name);
+    linkat(old_path.as_str(), new_path.as_str())
 }
 
 /// YOUR JOB: Implement unlinkat.
 pub fn sys_unlinkat(_name: *const u8) -> isize {
     trace!(
-        "kernel:pid[{}] sys_unlinkat NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_unlinkat",
         current_task().unwrap().pid.0
     );
-    -1
+    let token = current_user_token();
+    let path = translated_str(token, _name);
+    unlinkat(path.as_str())
 }
