@@ -41,6 +41,8 @@ pub struct TaskControlBlockInner {
     pub task_status: TaskStatus,
     /// It is set when active exit or execution error occurs
     pub exit_code: Option<i32>,
+    /// The mutex that the task is holding
+    pub mutex_holding_cnt: usize,
 }
 
 impl TaskControlBlockInner {
@@ -51,6 +53,11 @@ impl TaskControlBlockInner {
     #[allow(unused)]
     fn get_status(&self) -> TaskStatus {
         self.task_status
+    }
+
+    /// Add the mutex holding count
+    pub fn add_mutex_holding_cnt(&mut self) {
+        self.mutex_holding_cnt += 1;
     }
 }
 
@@ -75,6 +82,7 @@ impl TaskControlBlock {
                     task_cx: TaskContext::goto_trap_return(kstack_top),
                     task_status: TaskStatus::Ready,
                     exit_code: None,
+                    mutex_holding_cnt: 0,
                 })
             },
         }

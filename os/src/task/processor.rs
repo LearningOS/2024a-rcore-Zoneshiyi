@@ -11,6 +11,7 @@ use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::sync::Arc;
 use lazy_static::*;
+use crate::mm::translated_byte_buffer;
 
 /// Processor management structure
 pub struct Processor {
@@ -126,5 +127,21 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     drop(processor);
     unsafe {
         __switch(switched_task_cx_ptr, idle_task_cx_ptr);
+    }
+}
+
+/// Copy data to current user space
+/// dst: the destination address in user space
+/// src: the source address in kernel space
+/// len: the length of data
+pub fn copy_to_current_user(dst: *mut u8, src: *const u8, len: usize) {
+    let token = current_user_token();
+    let src_bytes: &[u8] = unsafe { core::slice::from_raw_parts(src, len) };
+    let buffers = translated_byte_buffer(token, dst as *const u8, len);
+    let mut offset = 0;
+    for buf in buffers {
+        let buf_len = buf.len();
+        buf.copy_from_slice(&src_bytes[offset..offset + buf_len]);
+        offset += buf_len;
     }
 }

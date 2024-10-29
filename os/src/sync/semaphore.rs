@@ -52,4 +52,12 @@ impl Semaphore {
             block_current_and_run_next();
         }
     }
+    /// get the count of semaphore
+    pub fn get_count(&self) -> isize {
+        self.inner.exclusive_access().count
+    }
+    /// get the count of blocked tasks cnt
+    pub fn get_blocked_tasks_cnt(&self) -> usize {
+        self.inner.exclusive_access().wait_queue.len()
+    }
 }
